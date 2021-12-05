@@ -291,6 +291,7 @@ def main():
                             while len(rows[k]) != 1:
                                 k += 1
                             segments = []
+                            print(rows[r+1:k])
                             for addr_row in rows[r+1:k]:
                                 sorted_addr_row = sorted(addr_row, key=lambda x: x[0][0])
                                 compared_boxes = []
@@ -308,15 +309,18 @@ def main():
                                             compared_boxes.append(ele_c)
                                             text += " " + text_c
                                     segments.append(text)
+                            print(f"{field_name}: {field_value}")
+                            print(segments)
                             entry["Address Line 1"] = field_value
-                            entry["Address Line 2"] = segments[0]
-                            entry["City"] = segments[1]
-                            entry["State"] = segments[2]
-                            entry["Zip"] = segments[3]
-                            entry["Number Type"] = segments[4]
-                            entry["Phone Number"] = segments[5]
+                            entry["Address Line 2"] = segments[0] if len(segments) == 6 else ""
+                            entry["City"] = segments[-5]
+                            entry["State"] = segments[-4]
+                            entry["Zip"] = segments[-3]
+                            entry["Number Type"] = segments[-2]
+                            entry["Phone Number"] = segments[-1]
                         elif field_name in ["name", "admitting md"]:
                             f, m, l = name_parser(field_value)
+                            print(f"{field_name}: {f}, {m} ,{l}")
                             if field_name == "name":
                                 entry["First Name"] = f
                                 entry["Middle Name"] = m
@@ -326,10 +330,11 @@ def main():
                                 entry["Admitting MD Middle Name"] = m
                                 entry["Admitting MD Last Name"] = l
                         else:
-                            # print(f"{field_name}: {field_value}")
+                            print(f"{field_name}: {field_value}")
                             entry[field_mapping[field_name]] = field_value
                 df = df.append(entry, ignore_index=True)
             except:
+                print("Phat gaya bhai")
                 continue
             df.to_csv("test.csv", index=False)
             # break
