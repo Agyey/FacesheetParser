@@ -1,12 +1,14 @@
 import os
 
 import cv2
+import numpy as np
 import pandas as pd
 import pytesseract
+from pdf2image import convert_from_path
+from tqdm import tqdm
+# pytesseract.pytesseract.tesseract_cmd = 'D:/Program Files/Tesseract-OCR/tesseract.exe'
 
-pytesseract.pytesseract.tesseract_cmd = 'D:/Program Files/Tesseract-OCR/tesseract.exe'
-
-IMAGE_DIRECTORY = "bin/facesheets"
+IMAGE_DIRECTORY = "facesheets"
 CONFIG_DIRECTORY = "bin"
 DEBUG = 0
 
@@ -70,7 +72,7 @@ def show_image(image, window_name="untitled"):
     """
     cv2.imshow(window_name, image)
     cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # cv2.destroyAllWindows()
 
 
 def name_parser(text):
@@ -162,34 +164,175 @@ def get_boxes(image):
 
 
 def main():
-    image_paths = filter(lambda x: x.endswith(".jpg"),
-                         os.listdir(IMAGE_DIRECTORY))
-    config = pd.read_excel(os.path.join(CONFIG_DIRECTORY, 'config.xlsx'))
-    for image_path in image_paths:
-        print(f"Page: {image_path}")
-        image_path = os.path.join(IMAGE_DIRECTORY, image_path)
-        image = cv2.imread(image_path)
-        data = get_boxes(image)
-        # DEBUGGING
-        if DEBUG:
+    for file_name in os.listdir('facesheets'):
+        df = pd.DataFrame(
+            columns=[
+                "First Name", "Middle Name", "Last Name",
+                "Visit ID", "MRN", "DOB", "Age", "Gender", "SSN",
+                "Admitting MD First Name", "Admitting MD Middle Name", "Admitting MD Last Name",
+                "Address Line 1", "Address Line 2", "City", "State", "Zip", "Phone Number", "Number Type",
+                "Policy Number", "Insurance Address Line 1", "Insurance City", "Insurance State",  "Insurance Zip"
+            ])
+        images = convert_from_path(f'facesheets/{file_name}')
+        c = 0
+        for image in images:
+            c += 1
+            if c == 4:
+                break
+            entry = {}
+            image.save("temp.jpg")
+            image = cv2.imread("temp.jpg")
+            data = get_boxes(np.asarray(image))
             num_points = len(data["level"])
-            for point in range(num_points):
-                x, y, w, h = data["left"][point], data["top"][point],\
-                             data["width"][point], data["height"][point]
-                draw_box(image, x, y, w, h)
-        else:
-            # Extract Field
-            fields = [x for x in config.values]
-            for label, field_width, field_type in fields:
-                field_value = extract_field(label, field_width, data)
-                print(f"{label}: ", field_value)
-                if field_type == 'Name':
-                    parsed_value = name_parser(field_value)
-                    print(f"{label} Parsed: ", parsed_value)
+            boxes = []
+            try:
+                for point in range(num_points):
+                    x, y, w, h = data["left"][point], data["top"][point], \
+                                 data["width"][point], data["height"][point]
+                    text = data["text"][point]
+                    if text.strip():
+                        boxes.append(((x, y, w, h), text))
+                compared_boxes = []
+                sorted_boxes = sorted(boxes, key=lambda x: x[0][1])
+                rows = []
+                for i, box in enumerate(sorted_boxes):
+                    if box in compared_boxes:
+                        continue
+                    coords, text = box
+                    x, y, w, h = coords
+                    row = [box]
+                    compared_boxes.append(box)
+                    for box_c in sorted_boxes[i+1:]:
+                        if box_c in compared_boxes:
+                            continue
+                        coords, text_c = box_c
+                        x_c, y_c, w_c, h_c = coords
+                        if abs(y - y_c) < 15 and abs(h - h_c) < 15:
+                            row.append(box_c)
+                            compared_boxes.append(box_c)
+                        else:
+                            break
+                    rows.append(row)
+                    x = min(row, key=lambda k: k[0][0])[0][0]
+                    y = min(row, key=lambda k: k[0][1])[0][1]
+                    w = max(k[0][0] + k[0][2] for k in row) - x
+                    h = max(k[0][1] + k[0][3] for k in row) - y
+                    # draw_box(image, x, y, w, h)
+                    # resized_image = image_resize(image, width=1000)
+                    # show_image(resized_image)
+                fields = [
+                    "name", "visit", "mr", "birthdate", "age", "gender", "ssn", "admitting md", "patient address/phone",
+                    "insurance addr", "city", "state", "zip", "policy"]
+                field_mapping = {
+                    "visit": "Visit ID", "mr": "MRN", "birthdate": "DOB", "age": "Age", "gender": "Gender", "ssn": "SSN",
+                    "policy": "Policy Number", "insurance addr": "Insurance Address Line 1", "city": "Insurance City",
+                    "state": "Insurance State", "zip": "Insurance Zip"
+                }
+                found_fields = []
+                for r, row in enumerate(rows):
+                    sorted_row = sorted(row, key=lambda x: x[0][0])
 
-        # Display Image
-        resized_image = image_resize(image, width=1000)
-        show_image(resized_image)
+                    for i, box in enumerate(sorted_row):
+                        coords, text = box
+                        x, y, w, h = coords
+                        field_name = ""
+                        for field in filter(lambda k: k not in found_fields, fields):
+                            matching = False
+                            for j, value in enumerate(field.split()):
+                                if text.lower().startswith(value):
+                                    matching = True
+                                    if i + j + 1 >= len(sorted_row):
+                                        if j != len(field.split()) - 1:
+                                            matching = False
+                                        break
+                                    box = sorted_row[i+j+1]
+                                    coords, text = box
+                                else:
+                                    matching = False
+                                    break
+                            if matching:
+                                field_name = field
+                                found_fields.append(field)
+                                break
+                        if not field_name:
+                            continue
+                        field_value = ""
+                        j = i + len(field_name.split())
+                        while True and j < len(sorted_row):
+                            box_c = sorted_row[j]
+                            coords_c, text_c = box_c
+                            if ":" not in text_c:
+                                break
+                            j += 1
+                        x_c, y_c, w_c, h_c = coords_c
+                        first_dist = x_c - x - w
+                        last_dist = 0
+                        last_edge = 0
+                        for box_c in sorted_row[j:]:
+                            coords_c, text_c = box_c
+                            x_c, y_c, w_c, h_c = coords_c
+                            if last_edge != 0:
+                                if last_dist == 0:
+                                    last_dist = x_c - last_edge
+                                    if last_dist > 0.5 * first_dist:
+                                        break
+                                else:
+                                    if x_c - last_edge > 2 * last_dist:
+                                        break
+                            if last_edge != 0:
+                                dist = x_c - last_edge
+                                if dist > first_dist:
+                                    break
+                            last_edge = x_c + w_c
+                            field_value += " " + text_c
+                        if field_name == "patient address/phone":
+                            text = ""
+                            k = r + 1
+                            while len(rows[k]) != 1:
+                                k += 1
+                            segments = []
+                            for addr_row in rows[r+1:k]:
+                                sorted_addr_row = sorted(addr_row, key=lambda x: x[0][0])
+                                compared_boxes = []
+                                for l, ele in enumerate(sorted_addr_row):
+                                    if ele in compared_boxes:
+                                        continue
+                                    coords, text = ele
+                                    x, y, w, h = coords
+                                    for ele_c in sorted_addr_row[l+1:]:
+                                        coords_c, text_c = ele_c
+                                        x_c, y_c, w_c, h_c = coords_c
+                                        if x_c - x - w > 50:
+                                            break
+                                        else:
+                                            compared_boxes.append(ele_c)
+                                            text += " " + text_c
+                                    segments.append(text)
+                            entry["Address Line 1"] = field_value
+                            entry["Address Line 2"] = segments[0]
+                            entry["City"] = segments[1]
+                            entry["State"] = segments[2]
+                            entry["Zip"] = segments[3]
+                            entry["Number Type"] = segments[4]
+                            entry["Phone Number"] = segments[5]
+                        elif field_name in ["name", "admitting md"]:
+                            f, m, l = name_parser(field_value)
+                            if field_name == "name":
+                                entry["First Name"] = f
+                                entry["Middle Name"] = m
+                                entry["Last Name"] = l
+                            else:
+                                entry["Admitting MD First Name"] = f
+                                entry["Admitting MD Middle Name"] = m
+                                entry["Admitting MD Last Name"] = l
+                        else:
+                            # print(f"{field_name}: {field_value}")
+                            entry[field_mapping[field_name]] = field_value
+                df = df.append(entry, ignore_index=True)
+            except:
+                continue
+            df.to_csv("test.csv", index=False)
+            # break
         break
 
 
